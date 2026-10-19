@@ -1,0 +1,24 @@
+# SEPRSO dependencies.
+#
+# torch is deliberately NOT listed: the right build depends on your CUDA
+# version, so install it first from the PyTorch index. Nothing in the scaffold
+# imports it yet; methods will.
+#
+#   conda create -n seprso python=3.10 -y && conda activate seprso
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   pip install -r requirements.txt
+
+# --- core --------------------------------------------------------------------
+numpy
+scipy             # meta-solvers (linear programs for Nash) once PSRO lands
+
+# --- environments ------------------------------------------------------------
+pettingzoo>=1.24
+gymnasium
+pygame            # imported by pettingzoo.classic even without rendering
+# OpenSpiel ships wheels for Linux and macOS only. On Windows use WSL; the rest
+# of the codebase imports fine without it (the import is lazy).
+open_spiel; sys_platform != "win32"
+
+# --- dev ---------------------------------------------------------------------
+pytest
