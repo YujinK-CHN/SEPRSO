@@ -10,6 +10,10 @@ curves share one x-axis without post-hoc alignment.
 One unit is one call to env.step(): one decision in a turn-based game, one
 joint action in a simultaneous one.
 
+Episodes are not cut at the budget boundary, so a run overshoots `total` by at
+most one episode (or one batch, for a method that collects in batches). The
+final eval record logs the true `budget_used`.
+
 What is charged: every step a method takes while training, INCLUDING the
 simulations used to estimate payoff tables (they are experience the method
 needed). What is not: evaluation rollouts done by the Evaluator, which measure

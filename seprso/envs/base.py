@@ -103,6 +103,7 @@ class MultiAgentEnv(ABC):
         if not timestep.done and limit is not None and self._t >= limit:
             timestep.truncated = True
             timestep.acting = ()
+            timestep.legal_masks = {}
         self._done = timestep.done
         return timestep
 

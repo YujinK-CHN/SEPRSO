@@ -92,11 +92,20 @@ def test_mixture_samples_per_episode():
     assert abs(np.mean(picks) - 0.75) < 0.03
 
 
-def test_truncation():
-    env = make_env(parse_env('connect_four' if HAS_PZ else 'rps'), max_episode_steps=1)
+@pytest.mark.skipif(not HAS_PZ, reason='pettingzoo not installed')
+def test_truncation_by_max_episode_steps():
+    env = make_env(parse_env('connect_four'), max_episode_steps=3)
+    ep = play_episode(env, _random_joint(env), np.random.default_rng(0), record=True)
+    assert ep.length == 3
+    assert ep.truncated and not ep.terminated
+    assert all(t[-1].truncated for t in ep.trajectories.values())
+
+
+def test_terminal_beats_truncation():
+    # rps ends at step 1, which is also the limit: a real ending is not a truncation.
+    env = make_env(parse_env('rps'), max_episode_steps=1)
     ep = play_episode(env, _random_joint(env), np.random.default_rng(0))
-    assert ep.length == 1
-    assert ep.truncated or ep.terminated
+    assert ep.terminated and not ep.truncated
 
 
 def test_parse_env_forms():
@@ -126,6 +135,33 @@ def test_pettingzoo_winner_gets_reward():
     for agent, transitions in ep.trajectories.items():
         assert transitions[-1].terminated
         assert transitions[-1].reward == ep.returns[agent]
+
+
+@pytest.mark.skipif(not HAS_PZ, reason='pettingzoo not installed')
+def test_pettingzoo_native_truncation():
+    # rps_v2 never terminates; it is cut off by its own max_cycles.
+    env = make_env(parse_env('pz_rps'))
+    ep = play_episode(env, _random_joint(env), np.random.default_rng(0))
+    assert ep.truncated and not ep.terminated
+
+
+@pytest.mark.skipif(not HAS_PZ, reason='pettingzoo not installed')
+@pytest.mark.parametrize('name', ['pz_rps', 'connect_four'])
+def test_pettingzoo_returns_match_reference_loop(name):
+    # Same fixed actions through the adapter and through PettingZoo's own
+    # agent_iter()/last() loop must give identical returns.
+    acts = {'player_0': 0, 'player_1': 1}
+    env = make_env(parse_env(name))
+    ep = play_episode(env, {a: FixedActionPolicy(acts[a]) for a in env.spec.agents},
+                      np.random.default_rng(0))
+    raw = env.raw
+    raw.reset(seed=0)
+    ref = {a: 0.0 for a in raw.possible_agents}
+    for agent in raw.agent_iter():
+        _, reward, term, trunc, _ = raw.last()
+        ref[agent] += reward
+        raw.step(None if (term or trunc) else acts[agent])
+    assert ep.returns == ref
 
 
 @pytest.mark.skipif(not HAS_PZ, reason='pettingzoo not installed')

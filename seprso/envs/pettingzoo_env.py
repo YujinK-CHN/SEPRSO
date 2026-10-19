@@ -97,8 +97,13 @@ class PettingZooEnv(MultiAgentEnv):
         rewards = self._zero_rewards()
         for agent in env.agents:
             rewards[agent] += float(env.rewards[agent])
+        # Read the end condition now: the dead steps below delete the agents'
+        # terminations/truncations entries, and with them the information
+        # whether the game ended or was cut off (e.g. rps_v2's max_cycles).
+        truncated = (any(env.truncations[a] for a in env.agents)
+                     and not any(env.terminations[a] for a in env.agents))
         self._skip_dead_agents()
-        return self._aec_timestep(rewards)
+        return self._aec_timestep(rewards, truncated=truncated)
 
     def _skip_dead_agents(self):
         env = self._env
@@ -106,7 +111,7 @@ class PettingZooEnv(MultiAgentEnv):
                               or env.truncations[env.agent_selection]):
             env.step(None)
 
-    def _aec_timestep(self, rewards):
+    def _aec_timestep(self, rewards, truncated=False):
         env = self._env
         self._skip_dead_agents()
         observations, legal_masks = {}, {}
@@ -116,14 +121,13 @@ class PettingZooEnv(MultiAgentEnv):
             if agent == env.agent_selection:
                 legal_masks[agent] = mask
         done = not env.agents
-        # PettingZoo does not distinguish "game over" from "time limit" once the
-        # agents are gone; a native truncation is reported as termination here.
         return TimeStep(
             observations=observations,
             legal_masks=legal_masks,
             acting=() if done else (env.agent_selection,),
             rewards=rewards,
-            terminated=done,
+            terminated=done and not truncated,
+            truncated=done and truncated,
         )
 
     # ----------------------------------------------------------- Parallel
