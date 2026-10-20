@@ -1,32 +1,36 @@
 """
 PSRO -- Policy-Space Response Oracles (Lanctot et al., 2017).
 
-Not a port of OpenSpiel's psro_v2, but the same decomposition, so its knobs
-mean the same thing here:
+Follows OpenSpiel's psro_v2 (PSROSolver + AbstractMetaTrainer + its oracles)
+in structure and defaults; it is a re-implementation on this codebase's env
+interface, not a wrapper, so it runs on PettingZoo as well as OpenSpiel.
 
-    populations          one Population per seat, seeded with RandomPolicy
-    empirical game       meta_game.PayoffTable, --psro-sims-per-entry episodes
-                         per entry, charged to the budget
-    meta-solver          meta_solvers.META_SOLVERS[--psro-meta-solver]
-    training selector    who the best response trains against
-                           probabilistic  the opponents' meta-strategy (standard PSRO)
-                           uniform        every opponent member equally
-    oracle               oracles.PPOOracle, --psro-br-steps env steps per response
+Setup (PSROSolver.__init__):
+    populations      one per seat, seeded with the uniform random policy
+    empirical game   every entry simulated --psro-sims-per-entry times
+    meta-strategy    META_SOLVERS[--psro-meta-solver] on the payoff tensor
 
-One iteration:
-    1. for every seat, train a best response against the other seats'
-       training mixtures -- all seats against the SAME current meta-strategy
-       (psro_v2's simultaneous update);
-    2. add the responses to their populations;
-    3. simulate only the new entries of the payoff tensor;
-    4. re-solve for the meta-strategy.
+One iteration (AbstractMetaTrainer.iteration):
+    1. update_agents               the oracle trains one new policy per seat
+                                   against the others' meta-strategy mixtures
+                                   (marginals sampled per episode);
+    2. update_empirical_gamestate  simulate only the new payoff entries;
+    3. update_meta_strategies      re-solve.
 
-Output (policies()): per seat, the MixturePolicy of its population under the
-current meta-strategy.
+Oracles (--psro-oracle): 'pg' and 'dqn' are psro_v2's RL oracle with its two
+learners; 'br' is its exact best response (OpenSpiel turn-based games only).
 
-Budget: an iteration that starts is completed, so the run can overshoot the
-budget by one payoff-table update. The final eval record logs the real
-budget_used.
+Training-strategy selector: in psro_v2 it picks which existing policy each
+new response is trained FROM. A response is a copy of it only when the learner
+supports copy_with_noise; OpenSpiel's current JAX PG / DQN do not, so every
+response starts from scratch. That is the default here (--psro-br-init
+scratch). --psro-br-init copy restores the copy-plus-noise behaviour of the
+older TensorFlow learners (noise scale --psro-sigma).
+
+Stops after --psro-iterations iterations (psro_v2_example's gpsro_iterations)
+or when the env-step budget runs out, whichever is first. An iteration that has
+started is completed, so the budget can be overshot by one payoff-table update;
+the final eval record logs the true budget_used.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ import numpy as np
 
 from ..meta_game import PayoffTable, Population
 from ..meta_solvers import META_SOLVERS
+from ..oracles import BestResponseOracle, RLOracle, make_learner_factory
 from ..policies import MixturePolicy, RandomPolicy
 from ..registry import METHODS
 from .base import Method
@@ -48,11 +53,7 @@ class PSRO(Method):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        from ..learners.ppo import NetworkPolicy, PPOConfig
-        from ..oracles import PPOOracle
-
         a = self.args
-        self._network_policy_cls = NetworkPolicy
         self.env = self.env_fn()
         self.agents = self.spec.agents
         self.populations = {agent: Population() for agent in self.agents}
@@ -60,36 +61,40 @@ class PSRO(Method):
             pop.add(RandomPolicy(), kind='random', iteration=0)
         self.table = PayoffTable(self.env, self.populations, a.psro_sims_per_entry)
         self.solver = META_SOLVERS.get(a.psro_meta_solver)
-        self.oracle = PPOOracle(self.spec, PPOConfig.from_args(a), device=a.device, seed=a.seed)
+
+        if a.psro_oracle == 'br':
+            if a.obs_type != 'info_state':
+                raise ValueError("--psro-oracle br needs --obs-type info_state.")
+            self.oracle = BestResponseOracle(self.spec)
+        else:
+            self.oracle = RLOracle(self.spec, make_learner_factory(a.psro_oracle, self.spec, a),
+                                   number_training_episodes=a.psro_number_training_episodes,
+                                   self_play_proportion=a.psro_self_play_proportion,
+                                   sigma=a.psro_sigma, seed=a.seed)
         self.meta = None
         self.iteration = 0
 
     # -------------------------------------------------------------- loop
     def train(self):
         self._update_meta_game()
-        while not self.budget.exhausted:
+        while not self.budget.exhausted and self.iteration < self.args.psro_iterations:
             self.evaluator.maybe_evaluate(self)
             self.iteration += 1
 
-            responses = {}
-            for seat in self.agents:
-                opponents = {agent: self._training_mixture(agent)
-                             for agent in self.agents if agent != seat}
-                policy, updates = self.oracle(
-                    self.env, seat, opponents, self.rng, self.budget,
-                    steps=self.args.psro_br_steps,
-                    init_policy=self._warm_start(seat),
-                    on_update=lambda stats, seat=seat: self.logger.train(
-                        'ppo_update', {'iteration': self.iteration, 'seat': seat,
-                                       'budget_used': self.budget.used, **stats}))
+            mixtures = {agent: MixturePolicy(self.populations[agent].policies, self.meta[agent])
+                        for agent in self.agents}
+            responses = self.oracle(self.env, mixtures, self.rng, self.budget,
+                                    start_from=self._select_start_policies(),
+                                    on_episode=self._log_episode)
+            added = 0
+            for seat, (policy, episodes) in responses.items():
                 if policy is not None:
-                    responses[seat] = (policy, updates)
-
-            if not responses:
-                break   # budget ran out before any response was trained
-            for seat, (policy, updates) in responses.items():
-                self.populations[seat].add(policy, kind='ppo_br', iteration=self.iteration,
-                                           updates=updates, budget_used=self.budget.used)
+                    self.populations[seat].add(policy, kind=self.args.psro_oracle,
+                                               iteration=self.iteration, episodes=episodes,
+                                               budget_used=self.budget.used)
+                    added += 1
+            if not added:
+                break   # the budget ran out before any response was trained
             self._update_meta_game()
         self.env.close()
 
@@ -109,21 +114,34 @@ class PSRO(Method):
         record = {'iteration': self.iteration, 'budget_used': self.budget.used,
                   'new_entries': new_entries,
                   'population_sizes': {agent: len(pop) for agent, pop in self.populations.items()},
-                  'meta_strategy': {agent: dist for agent, dist in self.meta.items()}}
+                  'meta_strategy': dict(self.meta)}
         if int(np.prod(payoffs.shape[:-1])) <= _LOG_PAYOFFS_MAX_ENTRIES:
             record['payoffs'] = payoffs
         self.logger.train('psro_iteration', record)
 
-    def _training_mixture(self, agent):
-        policies = self.populations[agent].policies
-        if self.args.psro_training_selector == 'uniform':
-            weights = np.ones(len(policies))
-        else:
-            weights = self.meta[agent]
-        return MixturePolicy(policies, weights)
-
-    def _warm_start(self, seat):
-        if self.args.psro_br_init != 'latest':
+    def _select_start_policies(self):
+        """psro_v2's training_strategy_selector, with number_policies_selected = 1."""
+        if self.args.psro_br_init != 'copy':
             return None
-        latest = self.populations[seat].policies[-1]
-        return latest if isinstance(latest, self._network_policy_cls) else None
+        selector = self.args.psro_training_selector
+        chosen = {}
+        for agent in self.agents:
+            weights = self.meta[agent]
+            n = len(weights)
+            if selector == 'probabilistic':
+                index = self.rng.choice(n, p=weights)
+            elif selector == 'top_k_probabilities':
+                index = int(np.argmax(weights))
+            else:   # uniform
+                index = self.rng.integers(n)
+            chosen[agent] = self.populations[agent][int(index)]
+        return chosen
+
+    def _log_episode(self, seat, episode_index, learner, episode):
+        every = self.args.psro_log_every_episodes
+        if every and episode_index % every == 0:
+            losses = getattr(learner, 'last_losses', None) or {'q': getattr(learner, 'last_loss', None)}
+            self.logger.train('oracle_episode', {'iteration': self.iteration, 'seat': seat,
+                                                 'episode': episode_index,
+                                                 'budget_used': self.budget.used,
+                                                 'return': episode.returns[seat], **losses})

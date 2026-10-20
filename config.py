@@ -20,8 +20,9 @@ Groups:
     run         the knobs above, plus where output goes
     env         environment options shared by all backends
     eval        evaluation protocol (identical for every method)
-    psro        PSRO loop (names follow OpenSpiel's psro_v2)
-    ppo         PPO learner, used by PSRO's best-response oracle
+    psro        PSRO loop (names and defaults follow OpenSpiel's psro_v2)
+    pg / dqn    the RL oracle's learners (psro_v2_example.py's settings)
+    ppo         PPO learner, for the future self-play `ppo` method
     gems        empty until GEMS is written
 """
 
@@ -98,8 +99,9 @@ def _add_run_config(parser):
     group.add_argument('--exp-name', type=str, default='check',
                        help='Groups runs under results/<exp-name>/.')
     group.add_argument('--results-dir', type=str, default='results')
-    group.add_argument('--device', type=str, default='auto',
-                       help="'auto' picks cuda when available, else cpu.")
+    group.add_argument('--device', type=str, default='cpu',
+                       help="'auto' picks cuda when available. Default cpu: PSRO's learners "
+                            'update on one episode at a time, which a GPU does not speed up.')
 
 
 def _add_env_config(parser):
@@ -121,31 +123,82 @@ def _add_eval_config(parser):
 
 
 def _add_psro_config(parser):
-    # Names follow OpenSpiel's psro_v2 where the concept is the same.
+    # Names and defaults follow OpenSpiel's psro_v2 / psro_v2_example.py.
     group = parser.add_argument_group('psro')
+    group.add_argument('--psro-oracle', type=str, default='pg', choices=('pg', 'dqn', 'br'),
+                       help="Best-response oracle (psro_v2's oracle_type): RL with policy "
+                            "gradient or DQN, or exact best response (OpenSpiel only; the "
+                            "example's default).")
+    group.add_argument('--psro-iterations', type=int, default=100,
+                       help='Maximum PSRO iterations (gpsro_iterations); the budget may stop it sooner.')
     group.add_argument('--psro-meta-solver', type=str, default='auto',
                        choices=META_SOLVERS.names(),
-                       help="'auto' = nash for two-player zero-sum tables, else prd.")
-    group.add_argument('--psro-training-selector', type=str, default='probabilistic',
-                       choices=('probabilistic', 'uniform'),
-                       help='What best responses train against: the meta-strategy, '
-                            'or every population member equally.')
-    group.add_argument('--psro-sims-per-entry', type=int, default=100,
+                       help="'auto' = nash for two-player zero-sum tables, else prd. "
+                            '(psro_v2 defaults to alpharank, not ported yet.)')
+    group.add_argument('--psro-sims-per-entry', type=int, default=1000,
                        help='Episodes simulated per payoff-table entry (charged to budget).')
-    group.add_argument('--psro-br-steps', type=int, default=20_000,
-                       help='Env steps of PPO training per best response.')
-    group.add_argument('--psro-br-init', type=str, default='scratch',
-                       choices=('scratch', 'latest'),
-                       help="Start each best response from scratch, or from the seat's "
-                            'latest response.')
-    group.add_argument('--psro-prd-iterations', type=int, default=100_000)
+    group.add_argument('--psro-number-training-episodes', type=int, default=10_000,
+                       help='RL oracle: every new policy trains for more than this many episodes.')
+    group.add_argument('--psro-self-play-proportion', type=float, default=0.0,
+                       help="RL oracle: chance that another seat plays its own training policy.")
+    group.add_argument('--psro-br-init', type=str, default='scratch', choices=('scratch', 'copy'),
+                       help="RL oracle: new policies start from scratch (current OpenSpiel), or as "
+                            'a copy of the policy the training selector picks (older TF learners).')
+    group.add_argument('--psro-training-selector', type=str, default='probabilistic',
+                       choices=('probabilistic', 'uniform', 'top_k_probabilities'),
+                       help='Which existing policy a new one is copied from (--psro-br-init copy).')
+    group.add_argument('--psro-sigma', type=float, default=0.0,
+                       help='Gaussian noise added to copied weights (--psro-br-init copy).')
+    group.add_argument('--psro-prd-iterations', type=int, default=50_000)
     group.add_argument('--psro-prd-dt', type=float, default=1e-3)
-    group.add_argument('--psro-prd-gamma', type=float, default=1e-6,
+    group.add_argument('--psro-prd-gamma', type=float, default=1e-10,
                        help='PRD exploration floor: minimum mass on every member.')
+    group.add_argument('--psro-log-every-episodes', type=int, default=500,
+                       help='Write an oracle_episode record to train.jsonl every N episodes per '
+                            'seat (0 = never).')
+
+
+def _add_pg_config(parser):
+    # psro_v2_example.py's PG settings for open_spiel/python/jax/policy_gradient.py.
+    group = parser.add_argument_group('pg')
+    group.add_argument('--pg-loss', type=str, default='qpg', choices=('qpg', 'rpg', 'rm', 'a2c'))
+    group.add_argument('--pg-hidden', type=int, nargs='+', default=[256, 256, 256, 256])
+    group.add_argument('--pg-lambda', type=float, default=1.0)
+    group.add_argument('--pg-critic-lr', type=float, default=1e-2)
+    group.add_argument('--pg-pi-lr', type=float, default=1e-3)
+    group.add_argument('--pg-entropy-cost', type=float, default=0.001)
+    group.add_argument('--pg-num-critic-before-pi', type=int, default=8)
+    group.add_argument('--pg-optimizer', type=str, default='adam', choices=('adam', 'sgd'))
+    group.add_argument('--pg-max-grad-norm', type=float, default=None)
+
+
+def _add_dqn_config(parser):
+    # psro_v2_example.py's DQN settings for open_spiel/python/jax/dqn.py; the
+    # rest are that file's defaults.
+    group = parser.add_argument_group('dqn')
+    group.add_argument('--dqn-hidden', type=int, nargs='+', default=[256, 256, 256, 256])
+    group.add_argument('--dqn-batch-size', type=int, default=32)
+    group.add_argument('--dqn-lr', type=float, default=1e-2)
+    group.add_argument('--dqn-update-target-network-every', type=int, default=1000)
+    group.add_argument('--dqn-weight-update-coeff', type=float, default=0.995,
+                       help='tau of the soft target update.')
+    group.add_argument('--dqn-learn-every', type=int, default=10)
+    group.add_argument('--dqn-replay-buffer-capacity', type=int, default=10_000)
+    group.add_argument('--dqn-min-buffer-size-to-learn', type=int, default=1000)
+    group.add_argument('--dqn-discount', type=float, default=1.0)
+    group.add_argument('--dqn-epsilon-start', type=float, default=1.0)
+    group.add_argument('--dqn-epsilon-end', type=float, default=0.1)
+    group.add_argument('--dqn-epsilon-decay-duration', type=int, default=1_000_000)
+    group.add_argument('--dqn-epsilon-decay-schedule', type=str, default='exp',
+                       choices=('exp', 'linear'))
+    group.add_argument('--dqn-optimizer', type=str, default='adam',
+                       choices=('adam', 'sgd', 'rmsprop'))
+    group.add_argument('--dqn-loss', type=str, default='mse', choices=('mse', 'huber'))
+    group.add_argument('--dqn-gradient-clipping', type=float, default=None)
 
 
 def _add_ppo_config(parser):
-    # Shared by the PSRO best-response oracle and the (future) ppo method.
+    # For the (future) self-play `ppo` method; PSRO does not use PPO.
     # Defaults are CleanRL's, except a smaller rollout for short board/card games.
     group = parser.add_argument_group('ppo')
     group.add_argument('--ppo-lr', type=float, default=2.5e-4)
@@ -173,6 +226,8 @@ def get_config():
     _add_env_config(parser)
     _add_eval_config(parser)
     _add_psro_config(parser)
+    _add_pg_config(parser)
+    _add_dqn_config(parser)
     _add_ppo_config(parser)
     _add_gems_config(parser)
     return parser

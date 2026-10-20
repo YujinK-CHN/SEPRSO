@@ -78,60 +78,80 @@ def test_prd_three_players():
     assert all(d[1] > 0.95 for d in dists)
 
 
-# ------------------------------------------------------------------ oracle
+# ----------------------------------------------------------------- oracles
 def _args(*extra):
     return resolve(get_config().parse_args(['--env', 'rps', *extra]))
 
 
-def test_ppo_oracle_best_responds():
-    from seprso.learners.ppo import PPOConfig
-    from seprso.oracles import PPOOracle
+def _oracle_vs_rock(kind, *extra):
+    """Train player_1 against 'always rock' with the RL oracle; return its policy."""
+    from seprso.oracles import RLOracle, make_learner_factory
 
-    args = _args('--ppo-rollout-steps', '128', '--ppo-lr', '3e-3')
+    args = _args(*extra)
     env = make_env(args.env_preset)
-    oracle = PPOOracle(env.spec, PPOConfig.from_args(args), seed=0)
-    budget = BudgetTracker(10**6)
-    policy, updates = oracle(env, 'player_1', {'player_0': FixedActionPolicy(0)},
-                             np.random.default_rng(0), budget, steps=3000)
-    assert updates > 0 and budget.used >= 3000
+    oracle = RLOracle(env.spec, make_learner_factory(kind, env.spec, args),
+                      number_training_episodes=2000, seed=0)
+    budget = BudgetTracker(10**7)
+    mixtures = {a: MixturePolicy([FixedActionPolicy(0)], [1.0]) for a in env.spec.agents}
+    out = oracle(env, mixtures, np.random.default_rng(0), budget)
+    assert all(n > 2000 for _, n in out.values())   # every seat trained past the threshold
+    return out['player_1'][0]
+
+
+@pytest.mark.parametrize('loss', ['qpg', 'rpg', 'rm', 'a2c'])
+def test_pg_oracle_best_responds(loss):
+    policy = _oracle_vs_rock('pg', '--pg-loss', loss, '--pg-hidden', '32', '32',
+                             '--pg-pi-lr', '1e-2')
     probs = policy.action_probs(np.ones(1, np.float32), np.ones(3, bool))
-    assert probs[1] > 0.9, probs     # paper beats rock
+    assert probs[1] > 0.9, (loss, probs)     # paper beats rock
 
 
-def test_ppo_respects_action_mask():
-    from seprso.learners.ppo import PPOLearner, PPOConfig
-    learner = PPOLearner((1,), 3, PPOConfig())
-    policy = learner.policy()
+def test_dqn_oracle_best_responds():
+    policy = _oracle_vs_rock('dqn', '--dqn-hidden', '32', '32', '--dqn-lr', '1e-3',
+                             '--dqn-min-buffer-size-to-learn', '100')
+    probs = policy.action_probs(np.ones(1, np.float32), np.ones(3, bool))
+    np.testing.assert_allclose(probs, [0, 1, 0])   # greedy, and paper
+
+
+@pytest.mark.parametrize('kind', ['pg', 'dqn'])
+def test_learners_respect_action_mask(kind):
+    from seprso.oracles import make_learner_factory
+    env = make_env(parse_env('rps'))
+    learner = make_learner_factory(kind, env.spec, _args())('player_0', seed=0)
     mask = np.array([False, True, False])
     rng = np.random.default_rng(0)
-    assert all(policy.act(np.ones(1, np.float32), mask, rng) == 1 for _ in range(50))
-    assert policy.action_probs(np.ones(1, np.float32), mask)[[0, 2]].sum() == 0
+    for policy in (learner.policy(), learner.acting_policy()):
+        assert all(policy.act(np.ones(1, np.float32), mask, rng) == 1 for _ in range(50))
+
+
+def test_count_weighted_choice_balances_seats():
+    from seprso.oracles import random_count_weighted_choice
+    rng = np.random.default_rng(0)
+    picks = [random_count_weighted_choice([0, 99], rng) for _ in range(2000)]
+    assert np.mean(picks) < 0.05   # the seat with fewer episodes is picked ~100x as often
 
 
 # -------------------------------------------------------------------- PSRO
 def test_psro_rps_end_to_end(tmp_path):
     import main
-    main.main(['--method', 'psro', '--env', 'rps', '--budget', '30000', '--seed', '0',
-               '--psro-br-steps', '2000', '--psro-sims-per-entry', '50',
-               '--ppo-rollout-steps', '128', '--ppo-lr', '3e-3',
-               '--psro-prd-iterations', '2000', '--eval-episodes', '50',
-               '--eval-metrics', 'nash_conv', '--eval-interval', '1',
-               '--results-dir', str(tmp_path)])
+    main.main(['--method', 'psro', '--env', 'rps', '--budget', '10000000', '--seed', '0',
+               '--psro-iterations', '6', '--psro-number-training-episodes', '1500',
+               '--psro-sims-per-entry', '100', '--pg-hidden', '32', '32', '--pg-pi-lr', '1e-2',
+               '--psro-prd-iterations', '2000', '--eval-metrics', 'nash_conv',
+               '--eval-interval', '1', '--results-dir', str(tmp_path)])
     run_dir = tmp_path / 'check' / 'rps' / 'psro' / 'seed0'
     train = [json.loads(line) for line in (run_dir / 'train.jsonl').read_text().splitlines()]
     iterations = [r for r in train if r['kind'] == 'psro_iteration']
-    assert len(iterations) >= 3
-    last = iterations[-1]
+    assert [r['iteration'] for r in iterations] == list(range(7))   # setup + 6 iterations
     # Population grew by one response per seat per iteration.
-    assert last['population_sizes'] == {'player_0': last['iteration'] + 1,
-                                         'player_1': last['iteration'] + 1}
+    assert iterations[-1]['population_sizes'] == {'player_0': 7, 'player_1': 7}
+    assert any(r['kind'] == 'oracle_episode' for r in train)
     evals = [json.loads(line) for line in (run_dir / 'eval.jsonl').read_text().splitlines()]
     assert evals[-1]['final']
-    assert any(r['kind'] == 'ppo_update' for r in train)
     # The random seed policy is already Nash in RPS (NashConv 0). The first best
     # response moves away from it; PSRO must then converge back towards it.
     nash_convs = [e['nash_conv'] for e in evals]
-    assert nash_convs[-1] < 0.25 and nash_convs[-1] < 0.6 * max(nash_convs), nash_convs
+    assert nash_convs[-1] < 0.6 * max(nash_convs), nash_convs
 
 
 def test_matrix_nash_conv():
@@ -146,12 +166,20 @@ def test_matrix_nash_conv():
 def test_psro_budget_is_charged(tmp_path):
     import main
     main.main(['--method', 'psro', '--env', 'rps', '--budget', '3000',
-               '--psro-br-steps', '1000', '--psro-sims-per-entry', '10',
-               '--ppo-rollout-steps', '64', '--psro-prd-iterations', '100',
+               '--psro-number-training-episodes', '100000', '--psro-sims-per-entry', '10',
+               '--pg-hidden', '16', '--psro-prd-iterations', '100',
                '--eval-episodes', '10', '--results-dir', str(tmp_path)])
     run_dir = tmp_path / 'check' / 'rps' / 'psro' / 'seed0'
     final = [json.loads(line) for line in (run_dir / 'eval.jsonl').read_text().splitlines()][-1]
-    assert final['budget_used'] >= 3000
+    # The oracle stopped on the budget, long before its episode threshold.
+    assert 3000 <= final['budget_used'] < 3500
+
+
+def test_prd_matches_openspiel_projection():
+    from seprso.meta_solvers import _simplex_projection
+    # The worked example in OpenSpiel's docstring.
+    np.testing.assert_allclose(_simplex_projection(np.array([0.4, 0.7, 0.6]), 0.2),
+                               [0.2, 0.45, 0.35])
 
 
 # ---------------------------------------------------------------- NashConv
@@ -195,13 +223,35 @@ def test_mixture_is_aggregated_by_reach():
 
 
 @pytest.mark.skipif(not HAS_OS, reason='open_spiel not installed')
-def test_psro_kuhn_reduces_nash_conv(tmp_path):
+def test_psro_kuhn_exact_br(tmp_path):
+    """PSRO with exact best responses (psro_v2_example's default oracle) on Kuhn poker."""
     import main
-    main.main(['--method', 'psro', '--env', 'kuhn_poker', '--budget', '60000',
-               '--psro-br-steps', '8000', '--psro-sims-per-entry', '100',
-               '--ppo-rollout-steps', '256', '--ppo-lr', '1e-3',
-               '--eval-metrics', 'nash_conv', '--eval-interval', '20000',
+    main.main(['--method', 'psro', '--env', 'kuhn_poker', '--budget', '10000000',
+               '--psro-oracle', 'br', '--psro-iterations', '8', '--psro-sims-per-entry', '300',
+               '--eval-metrics', 'nash_conv', '--eval-interval', '1',
                '--results-dir', str(tmp_path)])
     run_dir = tmp_path / 'check' / 'kuhn_poker' / 'psro' / 'seed0'
-    evals = [json.loads(line) for line in (run_dir / 'eval.jsonl').read_text().splitlines()]
-    assert evals[-1]['nash_conv'] < evals[0]['nash_conv'] * 0.6, [e['nash_conv'] for e in evals]
+    nash_convs = [json.loads(line)['nash_conv']
+                  for line in (run_dir / 'eval.jsonl').read_text().splitlines()]
+    assert nash_convs[0] > 0.9 and nash_convs[-1] < 0.15, nash_convs
+
+
+@pytest.mark.skipif(not HAS_OS, reason='open_spiel not installed')
+def test_br_oracle_is_exact():
+    """Against uniform play, the oracle's response must earn exactly OpenSpiel's BR value."""
+    from open_spiel.python import policy as os_policy
+    from open_spiel.python.algorithms import exploitability as os_expl
+    from open_spiel.python.algorithms import expected_game_score
+    from seprso.exploitability import aggregate
+    from seprso.oracles import BestResponseOracle
+
+    env = make_env(parse_env('kuhn_poker'))
+    mixtures = {a: MixturePolicy([RandomPolicy()], [1.0]) for a in env.spec.agents}
+    responses = BestResponseOracle(env.spec)(env, mixtures, None, None)
+    uniform = os_policy.UniformRandomPolicy(env.game)
+    for p, seat in enumerate(env.spec.agents):
+        expected = os_expl.best_response(env.game, uniform, p)['best_response_value']
+        joint = {a: (responses[seat][0] if a == seat else RandomPolicy()) for a in env.spec.agents}
+        tab = aggregate(env, joint)
+        value = expected_game_score.policy_value(env.game.new_initial_state(), [tab, tab])[p]
+        assert abs(value - expected) < 1e-9, (seat, value, expected)

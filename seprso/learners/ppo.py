@@ -1,8 +1,9 @@
 """
 PPO for one seat, against opponents held fixed.
 
-This is the learner behind PSRO's best-response oracle, and the building block
-for a self-play `ppo` method later. The update follows CleanRL's ppo.py
+The building block for the self-play `ppo` method (not yet registered). PSRO
+does not use it: its oracles follow OpenSpiel's psro_v2 (pg.py, dqn.py). The
+update follows CleanRL's ppo.py
 (clipped surrogate, GAE, advantage normalisation, value loss, entropy bonus,
 global gradient clipping), with two multi-agent changes:
 

@@ -5,6 +5,9 @@ Design follows OpenSpiel's psro_v2/meta_strategies.py: a meta-solver is a pure
 function of the payoff tensor, so the PSRO loop never knows which one it runs
 and a new solver is one registered function.
 
+Not ported yet from psro_v2: alpharank (the PSROSolver default), rm (regret
+matching) and uniform_biased.
+
 Input  payoffs   shape [n_0, ..., n_{N-1}, N]; payoffs[..., k] is seat k's payoff
                  (the layout of meta_game.PayoffTable.tensor()).
 Output list of N probability vectors, entry k of length n_k.
@@ -68,33 +71,33 @@ def _maximin(A, linprog):
 
 
 @META_SOLVERS.register('prd')
-def prd(payoffs, iterations=100_000, dt=1e-3, gamma=1e-6, average_last=None, **_):
-    """Projected replicator dynamics.
+def prd(payoffs, iterations=50_000, dt=1e-3, gamma=1e-10, average_last=None, **_):
+    """Projected replicator dynamics, as OpenSpiel's projected_replicator_dynamics.py.
 
     Each step moves every seat's distribution along the replicator flow and
-    projects it back onto the gamma-floored simplex, so no member's mass ever
-    reaches zero (PSRO needs every member to stay reachable). The returned
-    strategy is the average of the last `average_last` iterates (default: the
-    last 10%), which damps the cycling replicator dynamics are prone to.
+    projects it (exact L2 projection) back onto the simplex with every entry
+    >= gamma, so no member's mass reaches zero. Returns the average of the
+    trajectory -- all of it, including the uniform start, unless `average_last`
+    limits it to the last that many iterates.
+
+    Defaults are the values psro_v2_example.py passes (prd_iterations=50000,
+    prd_gamma=1e-10); the library defaults are 1e5 and 1e-6.
     """
     num_seats = payoffs.shape[-1]
     strategies = [np.full(n, 1.0 / n) for n in payoffs.shape[:-1]]
-    if average_last is None:
-        average_last = max(1, iterations // 10)
-    window = [np.zeros(n) for n in payoffs.shape[:-1]]
+    every = average_last is None
+    totals = [s.copy() if every else np.zeros_like(s) for s in strategies]
 
     for t in range(iterations):
         new = []
         for k in range(num_seats):
             values = _values_against(payoffs[..., k], strategies, k)
-            delta = values - values @ strategies[k]
-            updated = strategies[k] + dt * strategies[k] * delta
-            new.append(_project(updated, gamma))
+            delta = strategies[k] * (values - values @ strategies[k])
+            new.append(_simplex_projection(strategies[k] + dt * delta, gamma))
         strategies = new
-        if t >= iterations - average_last:
-            for k in range(num_seats):
-                window[k] += strategies[k]
-    return [w / w.sum() for w in window]
+        if every or t >= iterations - average_last:
+            totals = [tot + s for tot, s in zip(totals, strategies)]
+    return [tot / tot.sum() for tot in totals]
 
 
 def _values_against(tensor, strategies, seat):
@@ -107,9 +110,18 @@ def _values_against(tensor, strategies, seat):
     return out
 
 
-def _project(x, gamma):
-    x = np.maximum(x, gamma)
-    return x / x.sum()
+def _simplex_projection(x, gamma=0.0):
+    """Closest point in L2 to x on {p : sum p = 1, p_i >= gamma}.
+
+    Wang & Carreira-Perpinan's sort-based projection, exactly as OpenSpiel's
+    _simplex_projection.
+    """
+    n = len(x)
+    idx = np.arange(1, n + 1)
+    u = np.sort(x)[::-1]
+    u_tmp = (1 - np.cumsum(u) - (n - idx) * gamma) / idx
+    rho = np.searchsorted(u + u_tmp <= gamma, True)
+    return np.maximum(x + u_tmp[rho - 1], gamma)
 
 
 @META_SOLVERS.register('auto')
