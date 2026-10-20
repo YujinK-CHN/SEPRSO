@@ -70,6 +70,18 @@ Where this differs from psro_v2, on purpose:
 Not ported yet: alpharank, `rm` / `uniform_biased` meta-solvers, rectified
 training, symmetric-game mode, `number_policies_selected > 1`.
 
+**Checked against psro_v2.** Kuhn poker, PG oracle, PRD meta-solver, example
+defaults otherwise, 10 iterations, NashConv after each iteration (OpenSpiel
+2.0.2, its JAX learners):
+
+| iteration | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| psro_v2_example | 0.586 | 0.395 | 0.374 | 0.364 | 0.335 | 0.343 | 0.331 | 0.323 | 0.324 | 0.317 |
+| SEPRSO | 0.570 | 0.289 | 0.390 | 0.370 | 0.365 | 0.341 | 0.316 | 0.326 | 0.328 | 0.311 |
+
+(The example's `nash` meta-solver could not be compared: its cvxpy LP returns
+no solution on the initial 1x1 game with current cvxpy.)
+
 ## Layout
 
 ```

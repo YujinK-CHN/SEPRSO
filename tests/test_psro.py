@@ -255,3 +255,35 @@ def test_br_oracle_is_exact():
         tab = aggregate(env, joint)
         value = expected_game_score.policy_value(env.game.new_initial_state(), [tab, tab])[p]
         assert abs(value - expected) < 1e-9, (seat, value, expected)
+
+
+# ------------------------------------------------------------- PettingZoo
+HAS_PZ = True
+try:
+    import pettingzoo  # noqa: F401
+except ImportError:
+    HAS_PZ = False
+
+
+@pytest.mark.skipif(not HAS_PZ, reason='pettingzoo not installed')
+@pytest.mark.parametrize('env_name, oracle', [
+    ('tic_tac_toe', 'pg'),                                    # AEC, action masks
+    ('connect_four', 'dqn'),                                  # AEC, action masks
+    ('pettingzoo:pettingzoo.classic.rps_v2@parallel', 'pg'),  # Parallel API, truncation
+])
+def test_psro_runs_on_pettingzoo(tmp_path, env_name, oracle):
+    import main
+    main.main(['--method', 'psro', '--env', env_name, '--psro-oracle', oracle,
+               '--budget', '10000000', '--psro-iterations', '2',
+               '--psro-number-training-episodes', '30', '--psro-sims-per-entry', '5',
+               '--pg-hidden', '32', '--dqn-hidden', '32', '--dqn-min-buffer-size-to-learn', '20',
+               '--psro-prd-iterations', '200', '--eval-episodes', '5',
+               '--results-dir', str(tmp_path)])
+    name = parse_env(env_name)['name']
+    run_dir = tmp_path / 'check' / name / 'psro' / 'seed0'
+    train = [json.loads(line) for line in (run_dir / 'train.jsonl').read_text().splitlines()]
+    last = [r for r in train if r['kind'] == 'psro_iteration'][-1]
+    assert last['iteration'] == 2
+    assert set(last['population_sizes'].values()) == {3}   # random + 2 responses per seat
+    evals = [json.loads(line) for line in (run_dir / 'eval.jsonl').read_text().splitlines()]
+    assert evals[-1]['final'] and 'vs_random/mean' in evals[-1]
