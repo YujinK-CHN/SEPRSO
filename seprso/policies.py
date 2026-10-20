@@ -52,6 +52,13 @@ class FixedActionPolicy(Policy):
             return self.action
         return int(rng.choice(np.flatnonzero(legal_mask)))
 
+    def action_probs(self, obs, legal_mask):
+        if legal_mask[self.action]:
+            probs = np.zeros(len(legal_mask))
+            probs[self.action] = 1.0
+            return probs
+        return RandomPolicy().action_probs(obs, legal_mask)
+
 
 class MixturePolicy(Policy):
     """Samples one member per episode with the given weights, then plays it throughout.

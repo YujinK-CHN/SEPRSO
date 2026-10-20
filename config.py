@@ -20,17 +20,20 @@ Groups:
     run         the knobs above, plus where output goes
     env         environment options shared by all backends
     eval        evaluation protocol (identical for every method)
-    psro / ppo / gems
-                method hyper-parameters -- empty until each method is written
+    psro        PSRO loop (names follow OpenSpiel's psro_v2)
+    ppo         PPO learner, used by PSRO's best-response oracle
+    gems        empty until GEMS is written
 """
 
 import argparse
 import json
 import os
 
+from seprso.meta_solvers import META_SOLVERS
 from seprso.registry import METHODS, METRICS
 import seprso.methods  # noqa: F401  (registers methods)
 import seprso.evaluation  # noqa: F401  (registers metrics)
+import seprso.exploitability  # noqa: F401  (registers nash_conv)
 
 
 # --------------------------------------------------------------------------- #
@@ -51,6 +54,7 @@ ENV_PRESETS = {
     # native -- no dependencies; for debugging methods
     'rps':              {'backend': 'native', 'id': 'rps'},
     'matching_pennies': {'backend': 'native', 'id': 'matching_pennies'},
+    'prisoners_dilemma': {'backend': 'native', 'id': 'prisoners_dilemma'},
 
     # OpenSpiel -- imperfect-information benchmarks of the PSRO literature
     'kuhn_poker':       {'backend': 'openspiel', 'id': 'kuhn_poker'},
@@ -117,11 +121,45 @@ def _add_eval_config(parser):
 
 
 def _add_psro_config(parser):
-    parser.add_argument_group('psro')
+    # Names follow OpenSpiel's psro_v2 where the concept is the same.
+    group = parser.add_argument_group('psro')
+    group.add_argument('--psro-meta-solver', type=str, default='auto',
+                       choices=META_SOLVERS.names(),
+                       help="'auto' = nash for two-player zero-sum tables, else prd.")
+    group.add_argument('--psro-training-selector', type=str, default='probabilistic',
+                       choices=('probabilistic', 'uniform'),
+                       help='What best responses train against: the meta-strategy, '
+                            'or every population member equally.')
+    group.add_argument('--psro-sims-per-entry', type=int, default=100,
+                       help='Episodes simulated per payoff-table entry (charged to budget).')
+    group.add_argument('--psro-br-steps', type=int, default=20_000,
+                       help='Env steps of PPO training per best response.')
+    group.add_argument('--psro-br-init', type=str, default='scratch',
+                       choices=('scratch', 'latest'),
+                       help="Start each best response from scratch, or from the seat's "
+                            'latest response.')
+    group.add_argument('--psro-prd-iterations', type=int, default=100_000)
+    group.add_argument('--psro-prd-dt', type=float, default=1e-3)
+    group.add_argument('--psro-prd-gamma', type=float, default=1e-6,
+                       help='PRD exploration floor: minimum mass on every member.')
 
 
 def _add_ppo_config(parser):
-    parser.add_argument_group('ppo')
+    # Shared by the PSRO best-response oracle and the (future) ppo method.
+    # Defaults are CleanRL's, except a smaller rollout for short board/card games.
+    group = parser.add_argument_group('ppo')
+    group.add_argument('--ppo-lr', type=float, default=2.5e-4)
+    group.add_argument('--ppo-rollout-steps', type=int, default=1024,
+                       help="Learner transitions (the learning seat's decisions) per update.")
+    group.add_argument('--ppo-epochs', type=int, default=4)
+    group.add_argument('--ppo-minibatches', type=int, default=4)
+    group.add_argument('--ppo-gamma', type=float, default=0.99)
+    group.add_argument('--ppo-gae-lambda', type=float, default=0.95)
+    group.add_argument('--ppo-clip', type=float, default=0.2)
+    group.add_argument('--ppo-ent-coef', type=float, default=0.01)
+    group.add_argument('--ppo-vf-coef', type=float, default=0.5)
+    group.add_argument('--ppo-max-grad-norm', type=float, default=0.5)
+    group.add_argument('--ppo-hidden', type=int, nargs='+', default=[128, 128])
 
 
 def _add_gems_config(parser):

@@ -82,6 +82,19 @@ class OpenSpielEnv(MultiAgentEnv):
     def state(self):
         return self._state
 
+    def observation_for(self, state, player):
+        """The observation this env would give `player` at an arbitrary `state`.
+
+        Used by tree-walking tools (exploitability) so a policy sees exactly
+        what it saw during training.
+        """
+        agent = self.spec.agents[player]
+        obs = getattr(state, self._obs_fn)(player)
+        return np.asarray(obs, dtype=np.float32).reshape(self.spec.obs_shape[agent])
+
+    def legal_mask_for(self, state, player):
+        return self._mask(self.spec.agents[player], state.legal_actions(player))
+
     # ------------------------------------------------------------ backend
     def _reset(self, seed):
         self._state = self._game.new_initial_state()
@@ -128,11 +141,9 @@ class OpenSpielEnv(MultiAgentEnv):
                 acting = tuple(a for i, a in enumerate(agents) if state.legal_actions(i))
             else:
                 acting = (agents[state.current_player()],)
-            obs_fn = getattr(state, self._obs_fn)
-            observations = {a: np.asarray(obs_fn(i), dtype=np.float32).reshape(self.spec.obs_shape[a])
-                            for i, a in enumerate(agents)}
+            observations = {a: self.observation_for(state, i) for i, a in enumerate(agents)}
 
-        legal_masks = {a: self._mask(a, state.legal_actions(agents.index(a))) for a in acting}
+        legal_masks = {a: self.legal_mask_for(state, agents.index(a)) for a in acting}
         return TimeStep(
             observations=observations,
             legal_masks=legal_masks,
