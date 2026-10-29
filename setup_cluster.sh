@@ -12,7 +12,8 @@
 #   2. creates a virtualenv with the Alliance-recommended --no-download;
 #   3. installs every package from the Alliance wheelhouse where it exists
 #      (--no-index: wheels built for the cluster), falling back to PyPI for the
-#      rest (open_spiel, pettingzoo, ...), which login nodes can reach;
+#      rest (open_spiel, pettingzoo, ...), which login nodes can reach --
+#      including PyPI's manylinux wheels, which Alliance's pip otherwise skips;
 #   4. checks that everything imports.
 #
 # The Atari ROMs are NOT downloaded here: AutoROM asks you to accept the ROM
@@ -57,13 +58,58 @@ fi
 source "$VENV/bin/activate"
 pip install --no-index --upgrade pip 2>/dev/null || pip install --upgrade pip
 
-# Wheelhouse first, PyPI only for what the wheelhouse lacks.
+PYVER="$(python -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+SITE="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+
+# Alliance's Python refuses generic manylinux wheels from PyPI (it wants
+# packages built for the cluster), so pip falls back to the source tarball --
+# for open_spiel that is a C++20 build needing clang, which fails. The PyPI
+# wheels themselves run fine there (open_spiel needs glibc >= 2.27 and
+# GLIBCXX_3.4.22; the 2023 stack has newer), so ask for the manylinux tag
+# explicitly and install the wheel into the venv's site-packages. Its
+# dependencies then go through install() like everything else.
+MANYLINUX=(--platform manylinux2014_x86_64)   # pip doesn't expand an explicit
+for minor in $(seq 17 28); do                  # --platform, so list every tag
+  MANYLINUX+=(--platform "manylinux_2_${minor}_x86_64")
+done
+
+install_manylinux() {
+  local pkg="$1"
+  pip install --no-deps --only-binary=:all: --upgrade --target "$SITE" \
+      "${MANYLINUX[@]}" --implementation cp \
+      --python-version "$PYVER" --abi "cp${PYVER/./}" --abi abi3 --abi none \
+      "$pkg" >/dev/null 2>&1 || return 1
+  local deps
+  deps="$(python - "$pkg" <<'PYEOF'
+import sys
+from importlib.metadata import requires
+from pip._vendor.packaging.requirements import Requirement
+req = Requirement(sys.argv[1])
+for line in requires(req.name) or []:
+    dep = Requirement(line)
+    if dep.marker is None or any(dep.marker.evaluate({'extra': e}) for e in req.extras | {''}):
+        print(str(dep).split(';')[0].strip())
+PYEOF
+)"
+  if [[ -n "$deps" ]]; then
+    local dep_list
+    mapfile -t dep_list <<< "$deps"
+    install "${dep_list[@]}"
+  fi
+}
+
+# Wheelhouse first; then PyPI wheels; then PyPI's manylinux wheel; source last.
 install() {
+  local pkg
   for pkg in "$@"; do
     if pip install --no-index "$pkg" >/dev/null 2>&1; then
       echo "[setup] $pkg  (Alliance wheelhouse)"
-    else
+    elif pip install --only-binary=:all: "$pkg" >/dev/null 2>&1; then
       echo "[setup] $pkg  (PyPI)"
+    elif install_manylinux "$pkg"; then
+      echo "[setup] $pkg  (PyPI manylinux wheel)"
+    else
+      echo "[setup] $pkg  (PyPI, building from source)"
       pip install "$pkg"
     fi
   done
@@ -74,7 +120,7 @@ install() {
 install torch numpy scipy matplotlib pytest
 install gymnasium pygame "pettingzoo>=1.24" open_spiel
 if [[ $ATARI -eq 1 ]]; then
-  install "pettingzoo[atari]" autorom
+  install "pettingzoo[atari]" multi_agent_ale_py pygame-ce autorom
 fi
 
 echo "[setup] checking imports"
