@@ -28,6 +28,27 @@ Without conda, `python3 -m venv .venv && source .venv/bin/activate` works the
 same. OpenSpiel ships Linux and macOS wheels only, so on a Windows machine run
 everything inside WSL.
 
+## Alliance clusters (Slurm)
+
+On a login node:
+
+```bash
+cd ~/projects/def-yourpi && git clone https://github.com/YujinK-CHN/SEPRSO.git && cd SEPRSO
+bash setup_cluster.sh                 # venv at ~/venvs/seprso (python/3.11 module)
+source ~/venvs/seprso/bin/activate && AutoROM   # only for space_invaders; accept the ROM licence
+bash submit.sh --account def-yourpi --exp-name si_main --method gems --method psro \
+    --env space_invaders --budget 5000000 --seeds 0,1,2 --time 48:00:00
+```
+
+`setup_cluster.sh` installs from the Alliance wheelhouse where possible and
+from PyPI otherwise (compute nodes have no internet, so everything is installed
+up front). `submit.sh` submits one Slurm array task per (method, seed),
+CPU-only by default (`--cpus 4 --mem 16G --time 24:00:00`; `--gpus 1` if ever
+needed); every other flag goes to `main.py`. Before submitting it builds the
+env once on the login node and refuses run directories that already hold logs
+(unless `--overwrite`). `--dry-run` writes and prints the job script only. Job
+scripts go to `<out-root>/jobs/`, Slurm logs to `<out-root>/logs/`.
+
 ## How to run
 
 ```bash
@@ -182,7 +203,9 @@ best response faster than the KL term holds them.
 ```
 config.py                 single source of truth: ENV_PRESETS + every hyper-parameter
 main.py                   single entry point; builds shared pieces, runs --method
-run.sh                    launcher over methods x seeds
+run.sh                    launcher over methods x seeds (local)
+setup_cluster.sh          one-time venv setup on an Alliance login node
+submit.sh                 Slurm job-array submission (one task per method x seed)
 plot_results.py           learning curves across arms and seeds (+ training diagnostics)
 seprso/
   envs/
