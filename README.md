@@ -85,9 +85,9 @@ policy head is generated from z).
 
 Measured cost (WSL, CPU, 8 threads): random play ~380 decisions and 0.6 s per
 episode; CNN policies ~450-500 decisions and 1.1-1.2 s per episode; a PG
-update ~0.25 s per episode. At the default (Kuhn-sized) settings that is ~6 h
-per PSRO-PG iteration plus ~20 min per payoff entry, and ~1 h per GEMS
-iteration -- Space Invaders needs its own, smaller per-iteration settings.
+update ~0.25 s per episode. At the default settings that is ~6 h per PSRO-PG
+iteration (20,000 training episodes) plus ~20 min per new payoff entry, and
+~1 h per GEMS iteration (~40 h for its 40 iterations).
 
 ## PSRO and psro_v2
 
