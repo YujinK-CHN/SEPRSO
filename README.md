@@ -51,8 +51,16 @@ and on the native matrix games. PettingZoo games have no exact equivalent; use
 
 Output goes to `results/<exp-name>/<env>/<method>/seed<seed>/`:
 `config.json`, `eval.jsonl` (one record per evaluation watermark, same schema
-for every method) and `train.jsonl` (method internals: `psro_iteration`
-records with meta-strategies and payoffs, `oracle_episode` records with losses).
+for every method) and `train.jsonl` (method internals: `psro_iteration` /
+`oracle_episode` records, `gems_iteration` records with meta-strategies,
+values, oracle picks and ABR losses).
+
+Every eval record carries `method`, `env`, `seed`, `budget` and the method's
+variant (PSRO: `oracle`, `meta_solver`, `pg_loss`; GEMS: `generator`), so arms
+of one method never merge in a plot. A run directory that already holds logs is
+refused; use another `--exp-name` per arm, or `--overwrite` to replace a run.
+
+OpenSpiel games take parameters inline: `--env "openspiel:kuhn_poker(players=3)"`.
 
 ## PSRO and psro_v2
 

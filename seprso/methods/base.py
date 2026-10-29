@@ -43,6 +43,15 @@ class Method(ABC):
     def policies(self) -> dict:
         """agent -> Policy: the method's current joint policy, for evaluation."""
 
+    def variant(self) -> dict:
+        """Settings that make this run a different experimental arm of the same method.
+
+        Stamped on every eval record (next to method / env / seed / budget), so
+        two arms of one method -- e.g. PSRO with the pg and the br oracle -- can
+        never be averaged together as if they were seeds of one condition.
+        """
+        return {}
+
     def save(self, path):
         """Write a checkpoint under `path`. Optional."""
 

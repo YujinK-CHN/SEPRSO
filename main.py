@@ -28,6 +28,25 @@ from seprso.registry import METHODS
 from seprso.utils import set_seed
 
 
+LOG_FILES = ('eval.jsonl', 'train.jsonl')
+
+
+def prepare_run_dir(run_dir, overwrite):
+    """Create run_dir, refusing to mix a new run into an old run's logs.
+
+    The JSONL writers append, so a re-run -- or a second arm under the same
+    --exp-name -- would otherwise land in the same eval.jsonl as the first and
+    be read back as one run.
+    """
+    existing = [f for f in LOG_FILES if os.path.exists(os.path.join(run_dir, f))]
+    if existing and not overwrite:
+        raise SystemExit(f'{run_dir} already holds {", ".join(existing)} from an earlier run. '
+                         'Use a different --exp-name, or --overwrite to replace it.')
+    for f in existing:
+        os.remove(os.path.join(run_dir, f))
+    os.makedirs(run_dir, exist_ok=True)
+
+
 def main(argv=None):
     args = resolve(get_config().parse_args(argv))
     set_seed(args.seed)
@@ -40,10 +59,11 @@ def main(argv=None):
     spec = probe.spec
     probe.close()
 
-    os.makedirs(args.run_dir, exist_ok=True)
+    prepare_run_dir(args.run_dir, args.overwrite)
     save_config(args, os.path.join(args.run_dir, 'config.json'))
     # Everything that defines an experimental arm goes into meta, so it is on
-    # every eval record and the plotter can tell arms apart.
+    # every eval record and the plotter can tell arms apart. The method adds
+    # its own variant fields below, once it exists.
     logger = RunLogger(args.run_dir, meta={'method': args.method, 'env': args.env_name,
                                            'seed': args.seed, 'budget': args.budget})
 
@@ -55,6 +75,7 @@ def main(argv=None):
     method_cls = METHODS.get(args.method)
     method = method_cls(args=args, env_fn=env_fn, spec=spec, budget=budget, logger=logger,
                         evaluator=evaluator, rng=np.random.default_rng([args.seed, 0]))
+    logger.meta.update(method.variant())
     print(f'[seprso] {args.method} on {args.env_name} ({spec.backend}, '
           f'{spec.num_agents} agents, {"turn-based" if spec.turn_based else "simultaneous"}) '
           f'budget={args.budget} seed={args.seed} -> {args.run_dir}', flush=True)

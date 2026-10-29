@@ -99,6 +99,9 @@ def _add_run_config(parser):
     group.add_argument('--exp-name', type=str, default='check',
                        help='Groups runs under results/<exp-name>/.')
     group.add_argument('--results-dir', type=str, default='results')
+    group.add_argument('--overwrite', action='store_true',
+                       help='Replace the logs of an earlier run in the same run directory '
+                            '(otherwise refused).')
     group.add_argument('--device', type=str, default='cpu',
                        help="'auto' picks cuda when available. Default cpu: PSRO's learners "
                             'update on one episode at a time, which a GPU does not speed up.')

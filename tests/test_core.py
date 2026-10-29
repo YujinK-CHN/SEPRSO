@@ -206,3 +206,45 @@ def test_every_preset_is_well_formed():
     for name, preset in ENV_PRESETS.items():
         assert preset['backend'] in ('native', 'openspiel', 'pettingzoo'), name
         assert 'id' in preset, name
+
+
+def test_rerun_into_same_run_dir_is_refused(tmp_path):
+    import main
+    argv = ['--method', 'random', '--env', 'rps', '--budget', '50', '--eval-episodes', '2',
+            '--results-dir', str(tmp_path)]
+    main.main(argv)
+    with pytest.raises(SystemExit):
+        main.main(argv)                      # would otherwise append to the same eval.jsonl
+    main.main(argv + ['--overwrite'])
+    run_dir = tmp_path / 'check' / 'rps' / 'random' / 'seed0'
+    records = [json.loads(line) for line in (run_dir / 'eval.jsonl').read_text().splitlines()]
+    assert sum(r['final'] for r in records) == 1   # only the latest run's records remain
+
+
+@pytest.mark.parametrize('method, argv, expected', [
+    ('psro', ['--psro-oracle', 'pg', '--psro-iterations', '1',
+              '--psro-number-training-episodes', '5', '--psro-sims-per-entry', '2',
+              '--pg-hidden', '8', '--psro-prd-iterations', '10'],
+     {'oracle': 'pg', 'meta_solver': 'auto', 'pg_loss': 'qpg'}),
+    ('gems', ['--gems-iterations', '1', '--gems-mc-opponents', '1', '--gems-mc-rollouts', '1',
+              '--gems-oracle-opponents', '1', '--gems-oracle-rollouts', '2',
+              '--gems-mutation-pool', '1', '--gems-random-pool', '1', '--gems-abr-steps', '1',
+              '--gems-abr-batch-anchors', '2', '--gems-hyper-hidden', '8',
+              '--gems-generator', 'conditional'],
+     {'generator': 'conditional'}),
+])
+def test_eval_records_carry_the_method_variant(tmp_path, method, argv, expected):
+    pytest.importorskip('torch')
+    import main
+    main.main(['--method', method, '--env', 'rps', '--budget', '10000000', '--eval-episodes', '2',
+               '--results-dir', str(tmp_path), *argv])
+    run_dir = tmp_path / 'check' / 'rps' / method / 'seed0'
+    for line in (run_dir / 'eval.jsonl').read_text().splitlines():
+        assert expected.items() <= json.loads(line).items()
+
+
+@pytest.mark.skipif(not HAS_OS, reason='open_spiel not installed')
+def test_openspiel_full_game_string():
+    env = make_env(parse_env('openspiel:kuhn_poker(players=3)'))
+    assert env.spec.num_agents == 3
+    _check_episodes(env, n=5)

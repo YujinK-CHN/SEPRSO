@@ -102,6 +102,13 @@ class PSRO(Method):
         return {agent: MixturePolicy(self.populations[agent].policies, self.meta[agent])
                 for agent in self.agents}
 
+    def variant(self):
+        a = self.args
+        out = {'oracle': a.psro_oracle, 'meta_solver': a.psro_meta_solver}
+        if a.psro_oracle == 'pg':
+            out['pg_loss'] = a.pg_loss
+        return out
+
     # ----------------------------------------------------------- helpers
     def _update_meta_game(self):
         new_entries = self.table.update(self.rng, budget=self.budget)

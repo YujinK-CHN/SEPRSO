@@ -36,7 +36,10 @@ class OpenSpielEnv(MultiAgentEnv):
         super().__init__()
         pyspiel = _import_pyspiel()
         self._pyspiel = pyspiel
-        self._game = pyspiel.load_game(game, dict(game_params or {}))
+        # A full game string such as 'kuhn_poker(players=3)' carries its own
+        # parameters; load_game(name, params) would treat it as a bare name.
+        self._game = (pyspiel.load_game(game, dict(game_params)) if game_params
+                      else pyspiel.load_game(game))
         game_type = self._game.get_type()
 
         if game_type.dynamics == pyspiel.GameType.Dynamics.MEAN_FIELD:

@@ -44,6 +44,12 @@ Decisions the paper leaves open, made here and listed in the README:
 For more than two players the per-anchor estimate of step 1 is used for every
 seat (unbiased, like the paper's importance-weighted shared-batch estimator,
 with lower variance and more episodes).
+
+Budget: every episode of every phase is charged, including the random-play
+episodes that set the reward range for PettingZoo envs. An iteration that has
+started is completed, so the budget can be overshot by one iteration; the
+final eval record logs the true budget_used. The learners run on CPU whatever
+--device says (rollouts are one step at a time).
 """
 
 from __future__ import annotations
@@ -166,6 +172,9 @@ class GEMS(Method):
 
     def policies(self):
         return {p: MixturePolicy(self._members[p], self.sigma[p]) for p in self.agents}
+
+    def variant(self):
+        return {'generator': self.args.gems_generator}
 
     # ------------------------------------------------------------- helpers
     def _refresh(self):
