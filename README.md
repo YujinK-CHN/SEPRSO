@@ -62,6 +62,24 @@ refused; use another `--exp-name` per arm, or `--overwrite` to replace a run.
 
 OpenSpiel games take parameters inline: `--env "openspiel:kuhn_poker(players=3)"`.
 
+## Plotting
+
+```bash
+python plot_results.py results/main --list-metrics          # arms, seeds, metrics found
+python plot_results.py results/main                         # nash_conv, else vs_random/mean
+python plot_results.py results/main --metric vs_random/mean --metric self_play/mean --train
+python plot_results.py results --filter env=space_invaders --band minmax --out fig.pdf
+python plot_results.py results/main --table                 # the numbers instead of a figure
+```
+
+One series per arm (experiment, env, method and the method's variant fields
+from the eval records); seeds are averaged with a std / min-max / IQR band on
+the env-step axis, interpolated onto a shared grid where seeds' evaluation
+points differ. Legend names show only what differs between the plotted arms.
+`--train` adds `<out>_train.png`: PSRO's best-response training return and
+GEMS's mixture value and chosen-candidate value per iteration and seat.
+Default output: `<root>/plot.png`.
+
 ## Space Invaders (PettingZoo Atari)
 
 ```bash
@@ -165,6 +183,7 @@ best response faster than the KL term holds them.
 config.py                 single source of truth: ENV_PRESETS + every hyper-parameter
 main.py                   single entry point; builds shared pieces, runs --method
 run.sh                    launcher over methods x seeds
+plot_results.py           learning curves across arms and seeds (+ training diagnostics)
 seprso/
   envs/
     base.py               MultiAgentEnv / EnvSpec / TimeStep -- the one interface
@@ -198,6 +217,7 @@ tests/test_core.py        env adapters, rollout, budget, payoff table, pipeline
 tests/test_psro.py        meta-solvers, oracles, PSRO, NashConv (closed-form checks)
 tests/test_gems.py        OMWU, EB-UCB, generator, GEMS end to end
 tests/test_images.py      Atari wrapper, CNN learners, Space Invaders preset (if ROMs)
+tests/test_plot.py        plot_results grouping, naming, seed aggregation, CLI
 ```
 
 ## Design rules

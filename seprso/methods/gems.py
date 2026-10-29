@@ -148,6 +148,9 @@ class GEMS(Method):
 
             # Phase 1: every seat against the others' sigma_{t-1}.
             values = {p: self._estimate(p) for p in self.agents}
+            # The mixture's normalised value under sigma_{t-1} -- logged now, since
+            # sigma changes length once the new anchor is added.
+            record['mixture_value'] = {p: float(self.sigma[p] @ values[p]) for p in self.agents}
             # Phase 2.
             for p in self.agents:
                 self._omwu(p, values[p])

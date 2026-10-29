@@ -10,7 +10,8 @@
 
 # --- core --------------------------------------------------------------------
 numpy
-scipy             # meta-solvers (linear programs for Nash) once PSRO lands
+scipy             # meta-solvers (linear programs for Nash)
+matplotlib        # plot_results.py
 
 # --- environments ------------------------------------------------------------
 pettingzoo>=1.24
