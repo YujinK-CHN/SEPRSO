@@ -62,6 +62,33 @@ refused; use another `--exp-name` per arm, or `--overwrite` to replace a run.
 
 OpenSpiel games take parameters inline: `--env "openspiel:kuhn_poker(players=3)"`.
 
+## Space Invaders (PettingZoo Atari)
+
+```bash
+pip install "pettingzoo[atari]" autorom
+AutoROM            # accept the ROM licence
+python main.py --method gems --env space_invaders --budget 100000000
+```
+
+The `space_invaders` preset is `pettingzoo.atari.space_invaders_v2` (Parallel
+API, grey-scale) behind `AtariPreprocessing` (`seprso/envs/wrappers.py`):
+4-frame skip with max-pooling of the last two frames, 84x84, 4-frame stack,
+uint8 observations of shape `[4, 84, 84]`. One env step = one decision = 4
+emulator frames, so `--budget` and `--max-episode-steps` count decisions. Two
+players, 6 actions each, both scoring against the invaders (not zero-sum: use
+PRD / GEMS's OMWU, not the Nash LP). No exact NashConv exists; evaluate with
+`vs_random` / `self_play`.
+
+Image observations go through a Nature-DQN CNN (`learners/networks.py`) in PG,
+DQN and GEMS (for GEMS's `hyper` generator the CNN torso is shared and the
+policy head is generated from z).
+
+Measured cost (WSL, CPU, 8 threads): random play ~380 decisions and 0.6 s per
+episode; CNN policies ~450-500 decisions and 1.1-1.2 s per episode; a PG
+update ~0.25 s per episode. At the default (Kuhn-sized) settings that is ~6 h
+per PSRO-PG iteration plus ~20 min per payoff entry, and ~1 h per GEMS
+iteration -- Space Invaders needs its own, smaller per-iteration settings.
+
 ## PSRO and psro_v2
 
 Defaults are `psro_v2_example.py`'s: PG oracle with QPG loss, a 4x256 ReLU MLP,
@@ -144,6 +171,7 @@ seprso/
     openspiel_env.py      OpenSpiel adapter (sequential + simultaneous, chance resolved)
     pettingzoo_env.py     PettingZoo adapter (AEC + Parallel, any module path)
     native_env.py         dependency-free matrix games (rps, ...) for debugging
+    wrappers.py           AtariPreprocessing (skip, max-pool, resize, stack)
   policies.py             Policy interface, RandomPolicy, MixturePolicy
   rollout.py              play_episode(): the only env loop; per-agent credit assignment
   meta_game.py            Population + cached empirical PayoffTable
@@ -153,7 +181,8 @@ seprso/
     pg.py                 QPG / RPG / RM / A2C (port of OpenSpiel's JAX policy_gradient)
     dqn.py                DQN (port of OpenSpiel's JAX dqn)
     generator.py          GEMS generator (hyper / conditional), critic, GeneratorPolicy
-    ppo.py, networks.py   PPO, for the future self-play `ppo` method
+    networks.py           encoders (Nature-DQN CNN for images, flatten otherwise)
+    ppo.py                PPO, for the future self-play `ppo` method
   exploitability.py       exact NashConv; mixture -> behaviour policy by reach
   budget.py               BudgetTracker, in env steps
   evaluation.py           Evaluator + metric registry (vs_random, self_play)
@@ -168,6 +197,7 @@ seprso/
 tests/test_core.py        env adapters, rollout, budget, payoff table, pipeline
 tests/test_psro.py        meta-solvers, oracles, PSRO, NashConv (closed-form checks)
 tests/test_gems.py        OMWU, EB-UCB, generator, GEMS end to end
+tests/test_images.py      Atari wrapper, CNN learners, Space Invaders preset (if ROMs)
 ```
 
 ## Design rules

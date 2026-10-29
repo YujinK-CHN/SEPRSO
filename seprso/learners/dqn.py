@@ -36,6 +36,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from ..policies import Policy
+from .networks import is_image, make_encoder
 
 
 @dataclass
@@ -77,9 +78,11 @@ class DQNConfig:
 
 class QNet(nn.Module):
 
-    def __init__(self, obs_dim, num_actions, hidden):
+    def __init__(self, obs_shape, num_actions, hidden):
         super().__init__()
-        layers, last = [], obs_dim
+        # Images go through a CNN first; vectors are flattened, as in the JAX code.
+        self.encoder = make_encoder(obs_shape)
+        layers, last = [], self.encoder.out_dim
         for width in hidden:
             layers += [self._linear(last, width), nn.ReLU()]
             last = width
@@ -95,12 +98,12 @@ class QNet(nn.Module):
         return layer
 
     def forward(self, obs):
-        return self.model(obs.reshape(obs.shape[0], -1))
+        return self.model(self.encoder(obs))
 
 
 @torch.no_grad()
 def _greedy_probs(net, obs, legal_mask, epsilon):
-    q = net(torch.as_tensor(np.asarray(obs, dtype=np.float32)).unsqueeze(0))[0].numpy()
+    q = net(torch.as_tensor(np.asarray(obs)).unsqueeze(0))[0].numpy()
     q = np.where(legal_mask, q, -np.inf)
     probs = (1.0 - epsilon) * np.eye(len(q))[int(q.argmax())]
     probs = probs + epsilon * legal_mask / legal_mask.sum()
@@ -142,8 +145,8 @@ class DQNLearner:
         torch.manual_seed(seed)
         self.config = config
         self.num_actions = num_actions
-        obs_dim = int(np.prod(obs_shape))
-        self.net = QNet(obs_dim, num_actions, config.hidden)
+        self.obs_shape = tuple(obs_shape)
+        self.net = QNet(self.obs_shape, num_actions, config.hidden)
         self.target = copy.deepcopy(self.net)
         if config.optimizer == 'adam':
             self.optimizer = torch.optim.Adam(self.net.parameters(), lr=config.learning_rate)
@@ -155,11 +158,14 @@ class DQNLearner:
             raise ValueError(f'Unknown optimizer {config.optimizer!r}.')
 
         cap = int(config.replay_buffer_capacity)
+        # Image frames are stored as uint8: 10k Atari transitions take ~0.6 GB
+        # instead of ~2.3 GB in float32.
+        obs_dtype = np.uint8 if is_image(self.obs_shape) else np.float32
         self._buf = {
-            'obs': np.zeros((cap, obs_dim), np.float32),
+            'obs': np.zeros((cap, *self.obs_shape), obs_dtype),
             'action': np.zeros(cap, np.int64),
             'reward': np.zeros(cap, np.float32),
-            'next_obs': np.zeros((cap, obs_dim), np.float32),
+            'next_obs': np.zeros((cap, *self.obs_shape), obs_dtype),
             'final': np.zeros(cap, bool),
             'next_mask': np.zeros((cap, num_actions), bool),
         }
@@ -209,11 +215,10 @@ class DQNLearner:
         """Store the episode's transitions; the final step() call of the JAX agent is one more step."""
         for t in trajectory:
             final = t.terminated or t.truncated or t.next_obs is None
-            next_obs = np.zeros(self._buf['obs'].shape[1], np.float32) if t.next_obs is None \
-                else np.asarray(t.next_obs, np.float32).reshape(-1)
+            next_obs = 0 if t.next_obs is None else np.asarray(t.next_obs).reshape(self.obs_shape)
             next_mask = np.zeros(self.num_actions, bool) if t.next_legal_mask is None \
                 else np.asarray(t.next_legal_mask, bool)
-            self._add(np.asarray(t.obs, np.float32).reshape(-1), t.action, t.reward,
+            self._add(np.asarray(t.obs).reshape(self.obs_shape), t.action, t.reward,
                       next_obs, final, next_mask)
         if trajectory:
             self.on_step()

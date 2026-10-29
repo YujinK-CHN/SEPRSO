@@ -43,7 +43,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from ..policies import Policy
-from .networks import MASK_VALUE
+from .networks import MASK_VALUE, make_encoder
 
 LOSSES = ('qpg', 'rpg', 'rm', 'a2c')
 
@@ -82,9 +82,12 @@ def haiku_linear(in_dim, out_dim):
 class PGNet(nn.Module):
     """NetPG (policy + Q heads) or NetA2C (policy + V head) from the JAX code."""
 
-    def __init__(self, obs_dim, num_actions, hidden, a2c):
+    def __init__(self, obs_shape, num_actions, hidden, a2c):
         super().__init__()
-        layers, last = [], obs_dim
+        # Images go through a CNN first (not in the JAX code, which only sees
+        # OpenSpiel vectors); vectors are flattened, as there.
+        self.encoder = make_encoder(obs_shape)
+        layers, last = [], self.encoder.out_dim
         for width in hidden:
             layers += [haiku_linear(last, width), nn.ReLU()]
             last = width
@@ -94,7 +97,7 @@ class PGNet(nn.Module):
         self.num_actions = num_actions
 
     def forward(self, obs):
-        hidden = self.torso(obs.reshape(obs.shape[0], -1))
+        hidden = self.torso(self.encoder(obs))
         return self.policy_head(hidden), self.value_head(hidden)
 
 
@@ -106,7 +109,7 @@ class PGPolicy(Policy):
 
     @torch.no_grad()
     def action_probs(self, obs, legal_mask):
-        obs_t = torch.as_tensor(np.asarray(obs, dtype=np.float32)).unsqueeze(0)
+        obs_t = torch.as_tensor(np.asarray(obs)).unsqueeze(0)
         logits, _ = self.net(obs_t)
         probs = torch.softmax(logits, dim=-1)[0].double().numpy() * legal_mask
         return probs / probs.sum()
@@ -134,7 +137,7 @@ class PGLearner:
             raise ValueError(f'Unknown PG loss {config.loss!r}. Choose one of {LOSSES}.')
         torch.manual_seed(seed)
         self.config = config
-        self.net = PGNet(int(np.prod(obs_shape)), num_actions, config.hidden,
+        self.net = PGNet(obs_shape, num_actions, config.hidden,
                          a2c=config.loss == 'a2c')
         self._critic_opt = _optimizer(config.optimizer, self.net.parameters(), config.critic_lr)
         self._pi_opt = _optimizer(config.optimizer, self.net.parameters(), config.pi_lr)
@@ -178,8 +181,8 @@ class PGLearner:
         return loss.item()
 
     def _batch(self, trajectory):
-        obs = torch.as_tensor(np.stack([np.asarray(t.obs, np.float32).reshape(-1)
-                                        for t in trajectory]))
+        # Observations keep their dtype (uint8 frames stay uint8 until the encoder).
+        obs = torch.as_tensor(np.stack([np.asarray(t.obs) for t in trajectory]))
         mask = torch.as_tensor(np.stack([t.legal_mask for t in trajectory]), dtype=torch.bool)
         actions = torch.as_tensor([t.action for t in trajectory], dtype=torch.long)
         rewards = torch.as_tensor([t.reward for t in trajectory], dtype=torch.float32)

@@ -68,7 +68,7 @@ def test_eb_ucb_formula():
 @pytest.mark.parametrize('kind', ['hyper', 'conditional'])
 def test_generator_policies(kind):
     torch.manual_seed(0)
-    gen = make_generator(kind, obs_dim=5, num_actions=4, latent_dim=8,
+    gen = make_generator(kind, obs_shape=(5,), num_actions=4, latent_dim=8,
                          hyper_hidden=(32, 32), policy_hidden=16)
     rng = np.random.default_rng(0)
     obs, mask = rng.standard_normal(5).astype(np.float32), np.array([True, False, True, True])

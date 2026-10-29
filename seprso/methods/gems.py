@@ -122,10 +122,10 @@ class GEMS(Method):
         self.gen, self.critic, self.gen_opt, self.critic_opt = {}, {}, {}, {}
         self.anchors, self.sigma, self.v_prev, self.v_ema = {}, {}, {}, {}
         for p in self.agents:
-            obs_dim = int(np.prod(self.spec.obs_shape[p]))
-            gen = make_generator(a.gems_generator, obs_dim, self.spec.num_actions[p], d,
+            obs_shape = self.spec.obs_shape[p]
+            gen = make_generator(a.gems_generator, obs_shape, self.spec.num_actions[p], d,
                                  tuple(a.gems_hyper_hidden), a.gems_policy_hidden)
-            critic = Critic(obs_dim, d, tuple(a.gems_hyper_hidden))
+            critic = Critic(obs_shape, d, tuple(a.gems_hyper_hidden))
             self.gen[p], self.critic[p] = gen, critic
             self.gen_opt[p] = torch.optim.Adam(gen.parameters(), lr=a.gems_abr_lr)
             self.critic_opt[p] = torch.optim.Adam(critic.parameters(), lr=a.gems_critic_lr)
@@ -297,7 +297,8 @@ class GEMS(Method):
         a = self.args
         obs, zs, masks, actions, advantages, returns = [], [], [], [], [], []
         for z, traj in batch:
-            o = torch.as_tensor(np.stack([np.asarray(t.obs, np.float32).reshape(-1) for t in traj]))
+            # Observations keep their dtype and shape (uint8 frames go to the CNN as is).
+            o = torch.as_tensor(np.stack([np.asarray(t.obs) for t in traj]))
             zz = torch.as_tensor(np.repeat(z[None], len(traj), 0), dtype=torch.float32)
             rewards = np.array([t.reward for t in traj]) / scale
             with torch.no_grad():
@@ -305,7 +306,7 @@ class GEMS(Method):
                 last = traj[-1]
                 bootstrap = 0.0
                 if last.truncated and last.next_obs is not None:
-                    nxt = torch.as_tensor(np.asarray(last.next_obs, np.float32).reshape(1, -1))
+                    nxt = torch.as_tensor(np.asarray(last.next_obs))[None]
                     bootstrap = float(critic(nxt, zz[:1]))
             next_values = np.append(values[1:], bootstrap)
             deltas = rewards + a.gems_gamma * next_values - values

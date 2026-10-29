@@ -1,9 +1,13 @@
 """
 Networks shared by the learners.
 
-Observations are flattened, so one MLP serves every backend (OpenSpiel
-information-state vectors, PettingZoo board planes). Swap in a CNN or a
-recurrent core here when an environment needs one.
+make_encoder() picks how an observation becomes a feature vector:
+    image  [C, H, W] with H, W >= 36 (e.g. Atari frame stacks): the Nature-DQN
+           CNN (Mnih et al., 2015) -> 512 features; uint8 pixels are scaled to
+           [0, 1] inside, so observations can stay uint8 in buffers;
+    other  flattened as-is, so one MLP serves OpenSpiel information-state vectors
+           and PettingZoo board planes exactly as before.
+Learners put their MLPs on top of the encoder's features.
 
 Illegal actions are masked by setting their logits to a large negative number
 before the softmax, so they get (numerically) zero probability and zero
@@ -17,6 +21,46 @@ import torch
 from torch import nn
 
 MASK_VALUE = -1e9
+
+
+def is_image(obs_shape):
+    return len(obs_shape) == 3 and min(obs_shape[1:]) >= 36
+
+
+class NatureCNN(nn.Module):
+    """[B, C, H, W] pixels (0..255) -> [B, 512] features."""
+
+    def __init__(self, obs_shape, features=512):
+        super().__init__()
+        channels = obs_shape[0]
+        self.conv = nn.Sequential(
+            nn.Conv2d(channels, 32, 8, stride=4), nn.ReLU(),
+            nn.Conv2d(32, 64, 4, stride=2), nn.ReLU(),
+            nn.Conv2d(64, 64, 3, stride=1), nn.ReLU(),
+            nn.Flatten(),
+        )
+        with torch.no_grad():
+            flat = self.conv(torch.zeros(1, *obs_shape)).shape[1]
+        self.fc = nn.Sequential(nn.Linear(flat, features), nn.ReLU())
+        self.out_dim = features
+
+    def forward(self, obs):
+        return self.fc(self.conv(obs.float() / 255.0))
+
+
+class FlattenEncoder(nn.Module):
+
+    def __init__(self, obs_shape):
+        super().__init__()
+        self.out_dim = int(np.prod(obs_shape))
+
+    def forward(self, obs):
+        return obs.float().reshape(obs.shape[0], -1)
+
+
+def make_encoder(obs_shape):
+    obs_shape = tuple(obs_shape)
+    return NatureCNN(obs_shape) if is_image(obs_shape) else FlattenEncoder(obs_shape)
 
 
 def _layer(in_dim, out_dim, gain):

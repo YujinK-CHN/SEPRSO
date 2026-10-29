@@ -22,7 +22,19 @@ def make_env(preset: dict, max_episode_steps=None, obs_type='info_state') -> Mul
         name      label used in logs and run directories
         api       PettingZoo only: 'aec' (default) or 'parallel'
         kwargs    backend constructor kwargs (OpenSpiel game params, PZ env kwargs)
+        wrappers  optional {wrapper name: kwargs}, applied in order (envs/wrappers.py).
+                  max_episode_steps then counts the outermost env's steps.
     """
+    wrappers = preset.get('wrappers') or {}
+    if wrappers:
+        from .wrappers import WRAPPERS
+        env = make_env({k: v for k, v in preset.items() if k != 'wrappers'}, obs_type=obs_type)
+        for i, (name, kwargs) in enumerate(wrappers.items()):
+            last = i == len(wrappers) - 1
+            env = WRAPPERS[name](env, **(kwargs or {}),
+                                 max_episode_steps=max_episode_steps if last else None)
+        return env
+
     backend = preset['backend']
     name = preset.get('name', preset['id'])
     kwargs = preset.get('kwargs') or {}

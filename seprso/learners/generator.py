@@ -12,6 +12,12 @@ architecture. Two forms are provided:
                  when observations are large; the induced policy family is the
                  same in spirit but parameters are shared, not generated.
 
+Observations first pass through an encoder (networks.make_encoder): flattened
+for vectors, a shared Nature-DQN CNN for image stacks such as Atari frames. With
+images, the hypernetwork therefore generates the policy HEAD on top of shared
+CNN features -- generating a whole CNN per code is not practical, and the paper
+does not say how it handled pixels.
+
 Logits are divided by a temperature and illegal actions are masked out.
 
 Also here: the critic V(obs, z) used for GAE advantages in ABR-TR training (the
@@ -26,7 +32,7 @@ import torch
 from torch import nn
 
 from ..policies import Policy
-from .networks import MASK_VALUE
+from .networks import MASK_VALUE, make_encoder
 
 
 def _mlp(in_dim, hidden, out_dim, activation=nn.ReLU):
@@ -39,11 +45,13 @@ def _mlp(in_dim, hidden, out_dim, activation=nn.ReLU):
 
 
 class HyperGenerator(nn.Module):
-    """z -> weights of a one-hidden-layer policy MLP (tanh) -> logits."""
+    """z -> weights of a one-hidden-layer policy MLP (tanh) over encoded obs -> logits."""
 
-    def __init__(self, obs_dim, num_actions, latent_dim, hyper_hidden=(64, 64),
+    def __init__(self, obs_shape, num_actions, latent_dim, hyper_hidden=(64, 64),
                  policy_hidden=64):
         super().__init__()
+        self.encoder = make_encoder(obs_shape)
+        obs_dim = self.encoder.out_dim
         self.obs_dim, self.num_actions, self.h = obs_dim, num_actions, policy_hidden
         self.shapes = [(policy_hidden, obs_dim), (policy_hidden,),
                        (num_actions, policy_hidden), (num_actions,)]
@@ -66,7 +74,10 @@ class HyperGenerator(nn.Module):
         return self.hyper(z)
 
     def logits_from_params(self, params, obs):
-        """params [B, P], obs [B, obs_dim] -> logits [B, A] (one policy per row)."""
+        """params [B, P] (or [1, P], shared), obs [B, *obs_shape] -> logits [B, A]."""
+        obs = self.encoder(obs)
+        if params.shape[0] == 1 and obs.shape[0] > 1:
+            params = params.expand(obs.shape[0], -1)
         chunks, i = [], 0
         for shape in self.shapes:
             n = int(np.prod(shape))
@@ -81,38 +92,43 @@ class HyperGenerator(nn.Module):
 
 
 class ConditionalGenerator(nn.Module):
-    """One MLP over [obs, z] -> logits."""
+    """One MLP over [encoded obs, z] -> logits."""
 
-    def __init__(self, obs_dim, num_actions, latent_dim, hidden=(64, 64)):
+    def __init__(self, obs_shape, num_actions, latent_dim, hidden=(64, 64)):
         super().__init__()
-        self.net = _mlp(obs_dim + latent_dim, hidden, num_actions, nn.Tanh)
+        self.encoder = make_encoder(obs_shape)
+        self.net = _mlp(self.encoder.out_dim + latent_dim, hidden, num_actions, nn.Tanh)
 
     def params(self, z):
         return z   # the "parameters" of an induced policy are its code
 
     def logits_from_params(self, params, obs):
+        obs = self.encoder(obs)
+        if params.shape[0] == 1 and obs.shape[0] > 1:
+            params = params.expand(obs.shape[0], -1)
         return self.net(torch.cat([obs, params], dim=-1))
 
     def forward(self, obs, z):
-        return self.net(torch.cat([obs, z], dim=-1))
+        return self.logits_from_params(z, obs)
 
 
 class Critic(nn.Module):
-    """V(obs, z) for GAE."""
+    """V(obs, z) for GAE, with its own encoder."""
 
-    def __init__(self, obs_dim, latent_dim, hidden=(64, 64)):
+    def __init__(self, obs_shape, latent_dim, hidden=(64, 64)):
         super().__init__()
-        self.net = _mlp(obs_dim + latent_dim, hidden, 1, nn.Tanh)
+        self.encoder = make_encoder(obs_shape)
+        self.net = _mlp(self.encoder.out_dim + latent_dim, hidden, 1, nn.Tanh)
 
     def forward(self, obs, z):
-        return self.net(torch.cat([obs, z], dim=-1)).squeeze(-1)
+        return self.net(torch.cat([self.encoder(obs), z], dim=-1)).squeeze(-1)
 
 
-def make_generator(kind, obs_dim, num_actions, latent_dim, hyper_hidden, policy_hidden):
+def make_generator(kind, obs_shape, num_actions, latent_dim, hyper_hidden, policy_hidden):
     if kind == 'hyper':
-        return HyperGenerator(obs_dim, num_actions, latent_dim, hyper_hidden, policy_hidden)
+        return HyperGenerator(obs_shape, num_actions, latent_dim, hyper_hidden, policy_hidden)
     if kind == 'conditional':
-        return ConditionalGenerator(obs_dim, num_actions, latent_dim, hyper_hidden)
+        return ConditionalGenerator(obs_shape, num_actions, latent_dim, hyper_hidden)
     raise ValueError(f"generator must be 'hyper' or 'conditional', got {kind!r}")
 
 
@@ -145,7 +161,7 @@ class GeneratorPolicy(Policy):
 
     @torch.no_grad()
     def action_probs(self, obs, legal_mask):
-        obs_t = torch.as_tensor(np.asarray(obs, np.float32).reshape(1, -1))
+        obs_t = torch.as_tensor(np.asarray(obs))[None]
         mask_t = torch.as_tensor(np.asarray(legal_mask, bool)).reshape(1, -1)
         logits = self.generator.logits_from_params(self._params, obs_t)
         probs = torch.softmax(masked_logits(logits, mask_t, self.temperature), -1)[0]

@@ -69,6 +69,14 @@ ENV_PRESETS = {
     'connect_four':     {'backend': 'pettingzoo', 'id': 'pettingzoo.classic.connect_four_v3'},
     'tic_tac_toe':      {'backend': 'pettingzoo', 'id': 'pettingzoo.classic.tictactoe_v3'},
     'pz_rps':           {'backend': 'pettingzoo', 'id': 'pettingzoo.classic.rps_v2'},
+
+    # PettingZoo Atari (needs `pip install "pettingzoo[atari]" autorom` + `AutoROM`).
+    # Two players, both scoring against the invaders (not zero-sum). Standard
+    # Atari preprocessing: 4-frame skip with max-pooling, 84x84, 4-frame stack;
+    # one env step = one decision = 4 emulator frames.
+    'space_invaders':   {'backend': 'pettingzoo', 'id': 'pettingzoo.atari.space_invaders_v2',
+                         'api': 'parallel', 'kwargs': {'obs_type': 'grayscale_image'},
+                         'wrappers': {'atari': {'frame_skip': 4, 'stack': 4, 'size': 84}}},
 }
 
 
