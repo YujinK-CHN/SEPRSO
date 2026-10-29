@@ -9,7 +9,9 @@ Status:
   (re-implemented on this codebase's env interface, so it also runs on
   PettingZoo), with psro_v2's three oracles: RL with policy gradient (`pg`),
   RL with DQN (`dqn`), and exact best response (`br`, OpenSpiel only).
-- `ppo` (self-play) and `gems` are registered placeholders that raise
+- **`gems`** works: the Generative Evolutionary Meta-Solver (Sharma et al.,
+  TMLR 2026), per-player form, with the paper's Kuhn-poker defaults. See below.
+- `ppo` (self-play) is a registered placeholder that raises
   `NotImplementedError`.
 - `random` is a pipeline check, not a method.
 
@@ -37,6 +39,10 @@ python main.py --method psro --env kuhn_poker --psro-oracle pg  --budget 1000000
 python main.py --method psro --env kuhn_poker --psro-oracle dqn --budget 100000000 --eval-metrics nash_conv
 
 bash run.sh --method psro --env leduc_poker --budget 100000000 --seeds 0,1,2
+
+# GEMS with the paper's defaults (40 iterations)
+python main.py --method gems --env kuhn_poker --budget 100000000 --eval-metrics nash_conv
+python main.py --method gems --env connect_four --budget 100000000
 ```
 
 `--eval-metrics nash_conv` gives exact NashConv on OpenSpiel turn-based games
@@ -82,6 +88,42 @@ defaults otherwise, 10 iterations, NashConv after each iteration (OpenSpiel
 (The example's `nash` meta-solver could not be compared: its cvxpy LP returns
 no solution on the initial 1x1 game with current cvxpy.)
 
+## GEMS
+
+`seprso/methods/gems.py`, after Algorithm 1 of the paper, in its per-player form
+(App. F/H): every seat has its own generator, anchor set and meta-strategy.
+Each iteration: (1) Monte-Carlo value of every anchor against the other seats'
+mixtures, (2) one optimistic MWU step, (3) an EB-UCB bandit over mutated and
+random latent codes adds one anchor, (4) ABR-TR fine-tunes the generator
+(policy gradient with GAE plus a KL trust region). No payoff table is kept.
+
+Defaults are the paper's Kuhn reference settings (App. Table 3): T=40, k0=1,
+k_max=32, d_z=8, tau=1; N_MC=8 x M_MC=2; OMWU eta=0.03 const, logit cap 50;
+N_oracle=8 x M_oracle=2, 32 mutated (std 0.2) + 32 random candidates, delta_0=0.5;
+K_ABR=30 steps of 16 anchors, lr 2e-4, beta_KL=0.05, q_new=0.25, grad clip 0.5.
+
+Where the paper is silent or ambiguous, the choice made here:
+
+| | paper | here |
+|---|---|---|
+| Generator | "hypernetwork", "standard MLP" | MLP z -> weights of a 1-hidden-layer (64, tanh) policy (`--gems-generator hyper`); `conditional` = MLP([obs, z]) |
+| Critic for GAE | not described | V(obs, z) MLP, lr 1e-3, gamma 0.99, lambda 0.95 |
+| Reward scale | assumed in [0, 1] | normalised per seat: OpenSpiel min/max utility, matrix payoff range, else range seen in random play |
+| Mixture value r_hat | B=128 joint samples | sigma . v_hat (same in expectation; a constant OMWU's normalisation removes) |
+| New anchor's mass | not stated | 1/(k+1) (OMWU cannot grow a zero) |
+| "Top anchors" to mutate | not defined | parents drawn proportionally to sigma |
+| q_new = 0.25 | "new-opponent fraction" | probability a training anchor in ABR-TR is the new code (q_t of Eq. 11) |
+| lambda_J (Jacobian) | not in Table 3 | 0 (implemented, off) |
+| n > 2 players | importance-weighted shared batch | per-anchor estimates for every seat (also unbiased) |
+
+**Kuhn poker, paper defaults, one seed** (NashConv; the paper reports
+exploitability ~0.18 at iteration 40, which may be NashConv / 2):
+0.895 at start, best 0.332, 0.484 after 40 iterations (exploitability 0.24),
+347k env steps. Training anchor codes only on the new code (`--gems-new-fraction 1`)
+ended at 0.388. On rock-paper-scissors GEMS drifts away from the uniform Nash it
+starts near: ABR-TR pushes all anchors of the shared generator towards the same
+best response faster than the KL term holds them.
+
 ## Layout
 
 ```
@@ -102,6 +144,7 @@ seprso/
   learners/
     pg.py                 QPG / RPG / RM / A2C (port of OpenSpiel's JAX policy_gradient)
     dqn.py                DQN (port of OpenSpiel's JAX dqn)
+    generator.py          GEMS generator (hyper / conditional), critic, GeneratorPolicy
     ppo.py, networks.py   PPO, for the future self-play `ppo` method
   exploitability.py       exact NashConv; mixture -> behaviour policy by reach
   budget.py               BudgetTracker, in env steps
@@ -112,9 +155,11 @@ seprso/
     base.py               Method contract
     random_baseline.py    pipeline check
     psro.py               PSRO
-    ppo.py gems.py        placeholders
+    gems.py               GEMS
+    ppo.py                placeholder
 tests/test_core.py        env adapters, rollout, budget, payoff table, pipeline
 tests/test_psro.py        meta-solvers, oracles, PSRO, NashConv (closed-form checks)
+tests/test_gems.py        OMWU, EB-UCB, generator, GEMS end to end
 ```
 
 ## Design rules

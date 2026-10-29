@@ -23,7 +23,7 @@ Groups:
     psro        PSRO loop (names and defaults follow OpenSpiel's psro_v2)
     pg / dqn    the RL oracle's learners (psro_v2_example.py's settings)
     ppo         PPO learner, for the future self-play `ppo` method
-    gems        empty until GEMS is written
+    gems        GEMS (defaults from the paper's Kuhn-poker reference settings)
 """
 
 import argparse
@@ -216,7 +216,58 @@ def _add_ppo_config(parser):
 
 
 def _add_gems_config(parser):
-    parser.add_argument_group('gems')
+    # Defaults: the paper's Kuhn-poker reference settings (Sharma et al., TMLR
+    # 2026, App. Table 3). Marked "not in paper" where the paper is silent.
+    group = parser.add_argument_group('gems')
+    # budget / population
+    group.add_argument('--gems-iterations', type=int, default=40, help='Outer iterations T.')
+    group.add_argument('--gems-init-anchors', type=int, default=1, help='k0 per seat.')
+    group.add_argument('--gems-max-anchors', type=int, default=32, help='k_max per seat.')
+    group.add_argument('--gems-replacement', type=str, default='least_mass',
+                       choices=('least_mass', 'worst_ev'),
+                       help='Which anchor is replaced at k_max (App. P ablations).')
+    # generator / latent
+    group.add_argument('--gems-latent-dim', type=int, default=8, help='d_z.')
+    group.add_argument('--gems-temperature', type=float, default=1.0, help='Policy temperature tau.')
+    group.add_argument('--gems-generator', type=str, default='hyper', choices=('hyper', 'conditional'),
+                       help="'hyper': z -> policy weights, as described in the paper; "
+                            "'conditional': MLP([obs, z]).")
+    group.add_argument('--gems-hyper-hidden', type=int, nargs='+', default=[64, 64],
+                       help='Generator (and critic) hidden sizes. Not in paper.')
+    group.add_argument('--gems-policy-hidden', type=int, default=64,
+                       help='Hidden width of each generated policy. Not in paper.')
+    # phase 1: MC meta-game estimation
+    group.add_argument('--gems-mc-opponents', type=int, default=8, help='N_MC.')
+    group.add_argument('--gems-mc-rollouts', type=int, default=2, help='M_MC.')
+    group.add_argument('--gems-ema', type=float, default=0.0, help='EMA of v_hat; 0 disables.')
+    # phase 2: OMWU
+    group.add_argument('--gems-eta', type=float, default=0.03, help='OMWU step size eta.')
+    group.add_argument('--gems-eta-schedule', type=str, default='const',
+                       choices=('const', 'sqrt', 'harmonic'))
+    group.add_argument('--gems-eta-alpha', type=float, default=0.5, help="'harmonic' schedule alpha.")
+    group.add_argument('--gems-logit-cap', type=float, default=50.0)
+    # phase 3: EB-UCB expansion
+    group.add_argument('--gems-oracle-opponents', type=int, default=8, help='N_oracle.')
+    group.add_argument('--gems-oracle-rollouts', type=int, default=2, help='M_oracle.')
+    group.add_argument('--gems-mutation-pool', type=int, default=32, help='|Lambda_mut|.')
+    group.add_argument('--gems-random-pool', type=int, default=32, help='|Lambda_rand|.')
+    group.add_argument('--gems-mutation-std', type=float, default=0.2, help='sigma_mut.')
+    group.add_argument('--gems-ucb-delta', type=float, default=0.5,
+                       help='delta_0; confidence delta_t = delta_0 / t^2.')
+    group.add_argument('--gems-jacobian-coef', type=float, default=0.0,
+                       help='lambda_J. Not in Table 3 or the ablations; 0 = off.')
+    # phase 4: ABR-TR
+    group.add_argument('--gems-abr-steps', type=int, default=30, help='K_ABR gradient steps.')
+    group.add_argument('--gems-abr-batch-anchors', type=int, default=16)
+    group.add_argument('--gems-abr-lr', type=float, default=2e-4)
+    group.add_argument('--gems-kl-coef', type=float, default=0.05, help='beta_KL.')
+    group.add_argument('--gems-new-fraction', type=float, default=0.25,
+                       help='q_new: chance a training anchor is the newly added one.')
+    group.add_argument('--gems-grad-clip', type=float, default=0.5)
+    group.add_argument('--gems-critic-lr', type=float, default=1e-3, help='Not in paper.')
+    group.add_argument('--gems-gamma', type=float, default=0.99, help='GAE gamma. Not in paper.')
+    group.add_argument('--gems-gae-lambda', type=float, default=0.95,
+                       help='GAE lambda. Not in paper.')
 
 
 def get_config():

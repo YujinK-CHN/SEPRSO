@@ -194,7 +194,7 @@ def test_main_random_end_to_end(tmp_path):
     assert (run_dir / 'config.json').exists()
 
 
-@pytest.mark.parametrize('method', ['ppo', 'gems'])
+@pytest.mark.parametrize('method', ['ppo'])
 def test_stub_methods_fail_loudly(method, tmp_path):
     import main
     with pytest.raises(NotImplementedError):
